@@ -1,0 +1,41 @@
+---
+- name: Get server status
+  hosts: 192.168.28.54
+  gather_facts: no
+  vars:
+    ansible_connection: winrm
+    ansible_winrm_server_cert_validation: ignore
+  tasks:
+    - name: Ping the server to check if it's online
+      ansible.windows.win_ping:
+      register: ping_status
+      ignore_errors: yes
+
+    - name: Get disk space
+      ansible.windows.win_shell: |
+        Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free | Format-Table -AutoSize
+      register: disk_space
+
+    - name: Get server uptime
+      ansible.windows.win_shell: |
+        (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+      register: uptime
+
+    - name: Get CPU temperature (requires external tool like OpenHardwareMonitor)
+      ansible.windows.win_shell: |
+        # This requires OpenHardwareMonitor or a similar tool to be running
+        # You would need to parse its output or a WMI/CIM provider it makes available
+        "Not implemented in this playbook - requires external software"
+      register: cpu_temp
+
+    - name: Display results
+      ansible.builtin.debug:
+        msg: |
+          Server Status Report for {{ inventory_hostname }}
+          ------------------------------------------
+          Online Status: {{ 'Online' if not ping_status.failed else 'Offline' }}
+          Uptime: {{ uptime.stdout_lines }}
+          Disk Space:
+          {{ disk_space.stdout }}
+          CPU Temperature:
+          {{ cpu_temp.stdout }}
