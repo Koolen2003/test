@@ -5,35 +5,29 @@
   vars:
     ansible_connection: winrm
     ansible_winrm_server_cert_validation: ignore
+    
   tasks:
     - name: Ping the server to check if it's online
       ansible.windows.win_ping:
       register: ping_status
       ignore_errors: yes
 
-    - name: Get all server details and format as a single JSON object
+    - name: Get CPU temperature from OpenHardwareMonitor via PowerShell
       ansible.windows.win_shell: |
-        $report = @{}
-        
-        # Determine online status based on ping result
-        $report.online_status = "Online"
-        if ("{{ ping_status.failed }}" -eq "True") {
-            $report.online_status = "Offline"
-        }
-
-        # Get CPU temperature from OpenHardwareMonitor via WMI
         try {
             $tempSensor = Get-WmiObject -Namespace root\OpenHardwareMonitor -Class Sensor | Where-Object {$_.SensorType -eq 'Temperature' -and $_.Name -like "*CPU*"} | Select-Object Value
             if ($tempSensor) {
-                $report.cpu_temp = "$($tempSensor.Value) °C"
+                Write-Output "$($tempSensor.Value) °C"
             } else {
-                $report.cpu_temp = "CPU temp sensor not found."
+                Write-Output "CPU temp sensor not found."
             }
         } catch {
-            $report.cpu_temp = "OpenHardwareMonitor provider not running or not found."
+            Write-Output "OpenHardwareMonitor provider not running or not found."
         }
-        
-        # Get server uptime
+      register: cpu_temp_output
+      
+    - name: Get server runtime
+      ansible.windows.win_shell: |
         $os = Get-CimInstance Win32_OperatingSystem
         $lastBootUpTime = $os.LastBootUpTime
         $currentTime = Get-Date
@@ -41,29 +35,39 @@
         $days = $upTime.Days
         $hours = $upTime.Hours
         $minutes = $upTime.Minutes
-        $report.uptime = "$days days, $hours hours, $minutes minutes"
-        
-        # Get detailed disk space information
-        $disks = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
-        $disk_info = @()
-        foreach ($disk in $disks) {
-            $free_gb = [math]::Round($disk.FreeSpace / 1GB, 2)
-            $total_gb = [math]::Round($disk.Size / 1GB, 2)
-            $used_gb = [math]::Round($total_gb - $free_gb, 2)
-            $percentage_used = [math]::Round(($used_gb / $total_gb) * 100, 2)
-            $disk_info += [PSCustomObject]@{
-                Drive = $disk.DeviceID
-                TotalGB = $total_gb
-                UsedGB = $used_gb
-                PercentageUsed = $percentage_used
-            }
-        }
-        $report.disk_space = $disk_info
-        
-        # Convert the final report hash table to a JSON string and output it
-        $report | ConvertTo-Json
-      register: final_report
+        Write-Output "Uptime: $days days, $hours hours, $minutes minutes"
+      register: uptime
 
-    - name: Display final JSON report
-      debug:
-        msg: "Final Report JSON: {{ final_report.stdout }}"
+    - name: Get detailed disk space
+      ansible.windows.win_shell: |
+        $disks = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
+        $diskInfo = @()
+        foreach ($disk in $disks) {
+          $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
+          $totalGB = [math]::Round($disk.Size / 1GB, 2)
+          $usedGB = [math]::Round($totalGB - $freeGB, 2)
+          $percentageUsed = [math]::Round(($usedGB / $totalGB) * 100, 2)
+          $diskInfo += "Drive $($disk.DeviceID) - Used: $($usedGB) GB / Total: $($totalGB) GB ($($percentageUsed)%)"
+        }
+        Write-Output ($diskInfo -join "`n")
+      register: disk_space
+
+    - name: Display final report
+      ansible.builtin.debug:
+        msg: |
+          ==================================================
+          Server Status Report for {{ inventory_hostname }}
+          ==================================================
+          
+          Online Status: {{ 'Online' if not ping_status.failed else 'Offline' }}
+
+          --------------------------------------------------
+          System Information
+          --------------------------------------------------
+          {{ uptime.stdout }}
+          CPU Temperature: {{ cpu_temp_output.stdout }}
+
+          --------------------------------------------------
+          Disk Space
+          --------------------------------------------------
+          {{ disk_space.stdout }}
